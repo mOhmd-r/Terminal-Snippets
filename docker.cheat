@@ -1,0 +1,44 @@
+% docker, logs, disk
+
+# Show Docker JSON log usage by container name and path; useful for finding containers filling /var/lib/docker.
+for c in $(docker ps -aq); do name=$(docker inspect --format='{{.Name}}' "$c" | sed 's#^/##'); log=$(docker inspect --format='{{.LogPath}}' "$c"); [ -f "$log" ] && printf "%-30s %10s %s\n" "$name" "$(sudo du -h "$log" | cut -f1)" "$log"; done | sort -k2 -h
+
+% docker, image, prune
+
+# Remove unused Docker images older than 24 hours; Docker asks for confirmation unless -f is added manually.
+docker image prune -a --filter "until=24h"
+
+% docker, install, convenience, download
+
+# Download Docker's official convenience installer without executing it; inspect it before giving it root privileges.
+curl -fsSL https://get.docker.com -o get-docker.sh
+
+% docker, install, convenience, proxy, download
+
+# Download Docker's convenience installer through a temporary HTTP proxy used only by this curl command.
+curl -fsSL -x http://<proxy_host>:<proxy_port> https://get.docker.com -o get-docker.sh
+
+% docker, install, convenience, dry-run
+
+# Preview the previously downloaded convenience installer's planned actions before execution.
+sudo sh ./get-docker.sh --dry-run
+
+% docker, install, convenience, run
+
+# Execute the previously downloaded and reviewed Docker convenience installer.
+sudo sh ./get-docker.sh
+
+% docker, install, convenience, proxy, run
+
+# Run the reviewed installer with temporary proxy environment variables; no global proxy configuration is written.
+sudo env http_proxy="http://<proxy_host>:<proxy_port>" https_proxy="http://<proxy_host>:<proxy_port>" ftp_proxy="http://<proxy_host>:<proxy_port>" no_proxy="localhost,127.0.0.1,::1" sh ./get-docker.sh
+
+% docker, compose, install
+
+# Install Docker Compose v2 from the currently configured APT repositories.
+sudo apt-get update && sudo apt-get install -y docker-compose-plugin
+
+% docker, install, official-apt
+
+# Install Docker Engine components after Docker's official APT repository has already been configured.
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin

@@ -1,0 +1,69 @@
+% os, apt, proxy
+
+# Refresh APT package indexes through the local proxy only for this command; no global proxy configuration is changed.
+sudo apt -o Acquire::http::Proxy="http://127.0.0.1:1090" -o Acquire::https::Proxy="http://127.0.0.1:1090" update
+
+% os, update, workstation, full
+
+# Update APT plus optional Snap, Homebrew, and pipx-managed apps when those tools exist; avoids modifying Ubuntu system Python with sudo pip.
+sudo apt update && sudo apt full-upgrade -y && sudo apt autoremove --purge -y && sudo apt clean && { ! command -v snap >/dev/null || sudo snap refresh; } && { ! command -v brew >/dev/null || { brew update && brew upgrade && brew cleanup; }; } && { ! command -v pipx >/dev/null || pipx upgrade-all; }
+
+% os, apt, maintenance, full
+
+# Perform complete APT maintenance including dependency-changing upgrades, then remove unused packages and clean the package cache.
+sudo apt update && sudo apt full-upgrade -y && sudo apt autoremove --purge -y && sudo apt clean
+
+% os, apt, update, conservative, hold
+
+# Show held packages first, then perform a non-removing upgrade while preserving apt-mark holds.
+echo "=== Held packages ===" && { apt-mark showhold || true; } && echo "=====================" && sudo apt update && sudo apt upgrade --with-new-pkgs -y
+
+% os, apt, update
+
+# Refresh APT package metadata only; no installed packages are upgraded.
+sudo apt update
+
+% os, apt, upgrade
+
+# Apply normal package upgrades without removing installed packages to satisfy dependency changes.
+sudo apt update && sudo apt upgrade -y
+
+% os, apt, dist-upgrade
+
+# Apply apt-get dependency-changing upgrades; use only when you intentionally want the dist-upgrade behavior.
+sudo apt-get update && sudo apt-get dist-upgrade -y
+
+% os, apt, autoremove
+
+# Remove packages no longer required and purge their package configuration files.
+sudo apt autoremove --purge -y
+
+% os, apt, clean
+
+# Remove downloaded package archives from the local APT cache.
+sudo apt clean
+
+% os, snap, update
+
+# Refresh all installed Snap packages from their configured channels.
+sudo snap refresh
+
+% os, brew, update
+
+# Refresh Homebrew metadata, upgrade installed packages, and clean obsolete cached versions.
+brew update && brew upgrade && brew cleanup
+
+% os, python, pip, inspect
+
+# List outdated Python packages without modifying the current Python environment.
+python3 -m pip list --outdated
+
+% os, python, pipx, update
+
+# Upgrade applications managed by pipx without touching the OS-managed Python package set.
+pipx upgrade-all
+
+% os, flatpak, update
+
+# Update installed Flatpak applications and runtimes on hosts that use Flatpak.
+flatpak update

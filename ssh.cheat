@@ -1,0 +1,19 @@
+% ssh, hardening, security
+
+# Run the guarded SSH hardening helper to change the port and disable password/keyboard-interactive authentication.
+sudo "$NAVI_PATH/scripts/harden_ssh.sh"
+
+% ssh, config, validate
+
+# Validate sshd configuration syntax without applying or restarting anything.
+sudo sshd -t
+
+% ssh, effective-config
+
+# Show effective SSH listener and authentication settings after Includes and drop-ins are processed.
+sudo sshd -T | grep -E '^(port|passwordauthentication|kbdinteractiveauthentication|pubkeyauthentication|permitrootlogin) '
+
+% ssh, listen, verify
+
+# Show listening TCP sockets related to sshd/systemd to verify the active SSH listener.
+sudo ss -ltnp | grep -E 'sshd|systemd'
