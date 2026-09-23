@@ -7,7 +7,13 @@ SOCKET_DROPIN_DIR="/etc/systemd/system/ssh.socket.d"
 SOCKET_DROPIN="${SOCKET_DROPIN_DIR}/00-terminal-snippets-port.conf"
 BACKUP_ROOT="/var/backups/terminal-snippets-ssh"
 STAMP="$(date +%Y%m%d_%H%M%S)"
-BACKUP_DIR="${BACKUP_ROOT}/${STAMP}"
+BACKUP_DIR=""
+CONFIRM_TIMEOUT="${CONFIRM_TIMEOUT:-300}"
+
+ROLLBACK_ARMED=false
+SOCKET_MODE=0
+SERVICE=""
+UFW_RULE_ADDED=false
 
 log()  { printf '[+] %s\n' "$*"; }
 warn() { printf '[!] %s\n' "$*" >&2; }
@@ -17,6 +23,13 @@ die()  { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
 command -v sshd >/dev/null 2>&1 || die "sshd was not found. Install OpenSSH server first."
 command -v systemctl >/dev/null 2>&1 || die "systemd is required by this script."
 command -v ss >/dev/null 2>&1 || die "ss is required by this script."
+command -v tar >/dev/null 2>&1 || die "tar is required by this script."
+command -v stat >/dev/null 2>&1 || die "stat is required by this script."
+command -v getent >/dev/null 2>&1 || die "getent is required by this script."
+if [[ ! "$CONFIRM_TIMEOUT" =~ ^[0-9]+$ ]] ||
+   (( CONFIRM_TIMEOUT < 60 || CONFIRM_TIMEOUT > 900 )); then
+  die "CONFIRM_TIMEOUT must be between 60 and 900 seconds."
+fi
 
 SUDO_HOME=""
 if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
@@ -39,10 +52,12 @@ EOF
 
 if [[ -n "$SUDO_HOME" ]]; then
   AUTH_KEYS="${SUDO_HOME}/.ssh/authorized_keys"
-  if [[ ! -s "$AUTH_KEYS" ]]; then
-    warn "No non-empty ${AUTH_KEYS} found for sudo user ${SUDO_USER}."
-    warn "Confirm key-based login works before continuing."
-  fi
+  [[ -s "$AUTH_KEYS" && -f "$AUTH_KEYS" && ! -L "$AUTH_KEYS" ]] ||
+    die "A regular, non-empty ${AUTH_KEYS} is required before password authentication can be disabled."
+  [[ "$(stat -c '%u' "$AUTH_KEYS")" == "${SUDO_UID}" ]] ||
+    die "${AUTH_KEYS} must be owned by ${SUDO_USER}."
+  (( (8#$(stat -c '%a' "$AUTH_KEYS") & 8#022) == 0 )) ||
+    die "${AUTH_KEYS} must not be group- or world-writable."
 fi
 
 while true; do
@@ -59,7 +74,9 @@ if ss -ltnH "sport = :${NEW_PORT}" 2>/dev/null | grep -q .; then
   die "TCP port ${NEW_PORT} is already listening."
 fi
 
-mkdir -p "$BACKUP_DIR"
+mkdir -p "$BACKUP_ROOT"
+chmod 700 "$BACKUP_ROOT"
+BACKUP_DIR="$(mktemp -d "${BACKUP_ROOT}/${STAMP}.XXXXXX")"
 chmod 700 "$BACKUP_DIR"
 
 tar -C / -czf "${BACKUP_DIR}/etc-ssh.tgz" etc/ssh
@@ -70,9 +87,50 @@ fi
 
 log "Backup created under ${BACKUP_DIR}"
 
+# Invoked indirectly by the EXIT trap.
+# shellcheck disable=SC2317
+rollback() {
+  local status=$?
+  trap - EXIT INT TERM
+  if [[ "$ROLLBACK_ARMED" == "true" ]]; then
+    set +e
+    warn "Hardening was not confirmed; restoring the saved SSH configuration."
+    rm -f -- "$DROPIN" "$SOCKET_DROPIN"
+    tar -C / -xzf "${BACKUP_DIR}/etc-ssh.tgz"
+    if [[ -f "${BACKUP_DIR}/ssh-socket-dropins.tgz" ]]; then
+      tar -C / -xzf "${BACKUP_DIR}/ssh-socket-dropins.tgz"
+    else
+      rmdir "$SOCKET_DROPIN_DIR" 2>/dev/null || true
+    fi
+    systemctl daemon-reload
+    if (( SOCKET_MODE )); then
+      systemctl restart ssh.socket || warn "Automatic ssh.socket rollback restart failed."
+    else
+      if [[ -z "$SERVICE" ]]; then
+        systemctl cat ssh.service >/dev/null 2>&1 && SERVICE="ssh.service"
+        [[ -n "$SERVICE" ]] || { systemctl cat sshd.service >/dev/null 2>&1 && SERVICE="sshd.service"; }
+      fi
+      [[ -z "$SERVICE" ]] || systemctl restart "$SERVICE" ||
+        warn "Automatic SSH service rollback restart failed."
+    fi
+    if [[ "$UFW_RULE_ADDED" == "true" ]]; then
+      ufw --force delete allow "${NEW_PORT}/tcp" >/dev/null 2>&1 ||
+        warn "Could not remove the newly added UFW rule for ${NEW_PORT}/tcp."
+    fi
+    warn "Rollback attempted. Backup retained at ${BACKUP_DIR}."
+  fi
+  exit "$status"
+}
+
+ROLLBACK_ARMED=true
+trap rollback EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 mkdir -p "$CONFIG_DIR"
 
-cat > "$DROPIN" <<EOF
+DROPIN_TMP="$(mktemp "${CONFIG_DIR}/.terminal-snippets.XXXXXX")"
+cat > "$DROPIN_TMP" <<EOF
 # Managed by Terminal-Snippets
 Port ${NEW_PORT}
 PubkeyAuthentication yes
@@ -80,7 +138,8 @@ PasswordAuthentication no
 KbdInteractiveAuthentication no
 EOF
 
-chmod 600 "$DROPIN"
+chmod 600 "$DROPIN_TMP"
+mv -f -- "$DROPIN_TMP" "$DROPIN"
 
 if ! sshd -t; then
   rm -f "$DROPIN"
@@ -98,21 +157,21 @@ if [[ "$EFFECTIVE_PASSWORD" != "no" ||
   die "Effective SSH authentication settings do not match the requested hardening. No listener changes were made."
 fi
 
-SOCKET_MODE=0
-
 if systemctl cat ssh.socket >/dev/null 2>&1 &&
    { systemctl is-active --quiet ssh.socket || systemctl is-enabled --quiet ssh.socket; }; then
   SOCKET_MODE=1
 
   mkdir -p "$SOCKET_DROPIN_DIR"
 
-  cat > "$SOCKET_DROPIN" <<EOF
+  SOCKET_TMP="$(mktemp "${SOCKET_DROPIN_DIR}/.terminal-snippets.XXXXXX")"
+  cat > "$SOCKET_TMP" <<EOF
 [Socket]
 ListenStream=
 ListenStream=${NEW_PORT}
 EOF
 
-  chmod 644 "$SOCKET_DROPIN"
+  chmod 644 "$SOCKET_TMP"
+  mv -f -- "$SOCKET_TMP" "$SOCKET_DROPIN"
   log "Prepared ssh.socket override for TCP ${NEW_PORT}"
 else
   mapfile -t EFFECTIVE_PORTS < <(sshd -T | awk '$1=="port"{print $2}')
@@ -125,7 +184,12 @@ fi
 
 if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; then
   log "UFW is active; allowing ${NEW_PORT}/tcp before changing the listener."
-  ufw allow "${NEW_PORT}/tcp"
+  if ! ufw status | grep -Eq "^${NEW_PORT}/tcp([[:space:]]|$)"; then
+    ufw allow "${NEW_PORT}/tcp"
+    UFW_RULE_ADDED=true
+  else
+    log "An existing UFW rule already allows ${NEW_PORT}/tcp."
+  fi
   warn "TCP/22 was intentionally left allowed until a second SSH login is verified."
 else
   warn "UFW is inactive or unavailable."
@@ -161,8 +225,28 @@ if ! ss -ltnH "sport = :${NEW_PORT}" 2>/dev/null | grep -q .; then
   warn "Could not verify a TCP listener on ${NEW_PORT}."
   warn "DO NOT close this session."
   warn "Inspect: systemctl status ssh.socket ssh.service sshd.service"
-  exit 1
+  die "Listener verification failed; automatic rollback will run."
 fi
+
+cat <<EOF
+
+The new listener is active, but the change is not committed yet.
+Open a second terminal now and verify:
+
+  ssh -p ${NEW_PORT} <user>@<server>
+
+After that login succeeds, type KEEP below. If you disconnect, interrupt this
+script, or do not confirm within ${CONFIRM_TIMEOUT} seconds, the saved SSH
+configuration and any newly added UFW rule will be restored automatically.
+EOF
+
+if ! read -r -t "$CONFIRM_TIMEOUT" -p "Type KEEP after a successful second login: " CONFIRMATION ||
+   [[ "$CONFIRMATION" != "KEEP" ]]; then
+  die "Confirmation was not received; automatic rollback will run."
+fi
+
+ROLLBACK_ARMED=false
+trap - EXIT INT TERM
 
 cat <<EOF
 

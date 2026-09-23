@@ -78,19 +78,47 @@ remove_block() {
   local file="$1"
   local start="$2"
   local end="$3"
-  local tmp
+  local tmp start_count end_count
 
+  if [[ -L "$file" ]]; then
+    die "Refusing to rewrite symlinked configuration file: ${file}"
+  fi
+  mkdir -p "$(dirname "$file")"
   touch "$file"
-  tmp="$(mktemp)"
+  [[ -f "$file" ]] || die "Configuration path is not a regular file: ${file}"
+
+  start_count="$(grep -Fxc "$start" "$file" || true)"
+  end_count="$(grep -Fxc "$end" "$file" || true)"
+  if (( start_count != end_count || start_count > 1 )); then
+    die "Managed markers are malformed in ${file}; refusing to rewrite it."
+  fi
+
+  tmp="$(mktemp "${file}.terminal-snippets.XXXXXX")"
+  chmod --reference="$file" "$tmp"
 
   awk -v start="$start" -v end="$end" '
-    $0 == start { skip=1; next }
-    $0 == end   { skip=0; next }
+    $0 == start {
+      if (skip || seen) bad=1
+      skip=1
+      seen=1
+      next
+    }
+    $0 == end {
+      if (!skip) bad=1
+      skip=0
+      next
+    }
     !skip       { print }
-  ' "$file" > "$tmp"
+    END {
+      if (skip) bad=1
+      if (bad) exit 42
+    }
+  ' "$file" > "$tmp" || {
+    rm -f -- "$tmp"
+    die "Managed marker order is invalid in ${file}; no changes were made."
+  }
 
-  cat "$tmp" > "$file"
-  rm -f "$tmp"
+  mv -f -- "$tmp" "$file"
 }
 
 remove_managed_blocks() {
@@ -107,6 +135,8 @@ configure_shell() {
 
   {
     printf '\n%s\n' "$START_MARKER"
+    # HOME and PATH must expand when the user's shell loads this file.
+    # shellcheck disable=SC2016
     printf 'export PATH="$HOME/.local/bin:$PATH"\n'
     printf 'export NAVI_PATH="%s"\n' "$NAVI_DIR"
     printf '%s\n' "$END_MARKER"
@@ -192,6 +222,8 @@ configure_tmux() {
   {
     printf '\n%s\n' "$START_MARKER"
     printf '%s\n' '# Ctrl-G opens local Navi and only pastes the selected command.'
+    # HOME and the tmux pane format are intentionally evaluated at runtime.
+    # shellcheck disable=SC2016
     printf '%s\n' 'bind-key -n C-g run-shell '\''tmux display-popup -E -w 85% -h 85% "NAVI_TARGET=#{pane_id} $HOME/.local/bin/navi-safe-paste"'\'''
     printf '%s\n' "$END_MARKER"
   } >> "$TMUX_CONF"
