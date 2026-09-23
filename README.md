@@ -151,12 +151,17 @@ It:
 - disables keyboard-interactive authentication,
 - explicitly keeps public-key authentication enabled,
 - validates `sshd` before applying changes,
+- requires a safe, non-empty `authorized_keys` file for the invoking sudo user,
 - uses SSH and systemd drop-ins instead of editing vendor unit files,
 - backs up the SSH configuration,
 - adds the new UFW rule before switching listeners when UFW is active,
-- deliberately keeps the old TCP/22 firewall rule until a second login succeeds.
+- deliberately keeps the old TCP/22 firewall rule,
+- requires confirmation after a successful second login and automatically rolls
+  back SSH configuration, the listener, and a newly added UFW rule on failure,
+  interruption, disconnect, or confirmation timeout.
 
-Keep the current SSH session open until you verify the new connection.
+Keep the current SSH session open, verify the new connection from a second
+terminal, then type the exact confirmation shown by the helper.
 
 ## Security
 

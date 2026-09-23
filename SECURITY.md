@@ -61,6 +61,12 @@ Do not import unknown repositories blindly. Review the content first.
 - does not delete unrelated files from `/etc/ssh/sshd_config.d`,
 - does not edit vendor systemd units under `/lib/systemd` or `/usr/lib/systemd`,
 - validates the effective SSH configuration,
-- keeps the existing TCP/22 firewall rule until the operator verifies a successful login on the new port.
+- requires a regular, safely owned `authorized_keys` file before disabling password authentication,
+- keeps the existing TCP/22 firewall rule,
+- arms rollback before writing managed drop-ins,
+- restores the SSH configuration and listener unless the operator confirms a
+  successful second login within the bounded timeout.
 
-This reduces lockout risk but cannot eliminate it. Out-of-band access is recommended for critical systems.
+This materially reduces lockout risk but cannot eliminate failures outside the
+host, such as cloud firewalls or routing. Out-of-band access is recommended for
+critical systems. Backups remain under `/var/backups/terminal-snippets-ssh`.
