@@ -26,9 +26,10 @@ command -v ss >/dev/null 2>&1 || die "ss is required by this script."
 command -v tar >/dev/null 2>&1 || die "tar is required by this script."
 command -v stat >/dev/null 2>&1 || die "stat is required by this script."
 command -v getent >/dev/null 2>&1 || die "getent is required by this script."
-[[ "$CONFIRM_TIMEOUT" =~ ^[0-9]+$ ]] &&
-  (( CONFIRM_TIMEOUT >= 60 && CONFIRM_TIMEOUT <= 900 )) ||
+if [[ ! "$CONFIRM_TIMEOUT" =~ ^[0-9]+$ ]] ||
+   (( CONFIRM_TIMEOUT < 60 || CONFIRM_TIMEOUT > 900 )); then
   die "CONFIRM_TIMEOUT must be between 60 and 900 seconds."
+fi
 
 SUDO_HOME=""
 if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then

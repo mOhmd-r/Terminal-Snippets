@@ -135,6 +135,8 @@ configure_shell() {
 
   {
     printf '\n%s\n' "$START_MARKER"
+    # HOME and PATH must expand when the user's shell loads this file.
+    # shellcheck disable=SC2016
     printf 'export PATH="$HOME/.local/bin:$PATH"\n'
     printf 'export NAVI_PATH="%s"\n' "$NAVI_DIR"
     printf '%s\n' "$END_MARKER"
@@ -220,6 +222,8 @@ configure_tmux() {
   {
     printf '\n%s\n' "$START_MARKER"
     printf '%s\n' '# Ctrl-G opens local Navi and only pastes the selected command.'
+    # HOME and the tmux pane format are intentionally evaluated at runtime.
+    # shellcheck disable=SC2016
     printf '%s\n' 'bind-key -n C-g run-shell '\''tmux display-popup -E -w 85% -h 85% "NAVI_TARGET=#{pane_id} $HOME/.local/bin/navi-safe-paste"'\'''
     printf '%s\n' "$END_MARKER"
   } >> "$TMUX_CONF"
