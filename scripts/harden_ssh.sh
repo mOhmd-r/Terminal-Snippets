@@ -20,6 +20,8 @@ warn() { printf '[!] %s\n' "$*" >&2; }
 die()  { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
 
 [[ ${EUID} -eq 0 ]] || die "Run with sudo: sudo $0"
+[[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" && -n "${SUDO_UID:-}" ]] ||
+  die "Run through sudo from the account whose key login you will test; direct root execution is refused."
 command -v sshd >/dev/null 2>&1 || die "sshd was not found. Install OpenSSH server first."
 command -v systemctl >/dev/null 2>&1 || die "systemd is required by this script."
 command -v ss >/dev/null 2>&1 || die "ss is required by this script."
@@ -31,10 +33,15 @@ if [[ ! "$CONFIRM_TIMEOUT" =~ ^[0-9]+$ ]] ||
   die "CONFIRM_TIMEOUT must be between 60 and 900 seconds."
 fi
 
-SUDO_HOME=""
-if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
-  SUDO_HOME="$(getent passwd "$SUDO_USER" | cut -d: -f6 || true)"
+SUDO_HOME="$(getent passwd "$SUDO_USER" | cut -d: -f6 || true)"
+[[ -n "$SUDO_HOME" ]] || die "Could not determine the invoking user's home directory."
+SSHD_TEST_HOST="$(hostname -f 2>/dev/null || hostname)"
+SSHD_TEST_ADDR="${SSH_CONNECTION%% *}"
+if [[ -z "${SSH_CONNECTION:-}" || "$SSHD_TEST_ADDR" == "$SSH_CONNECTION" ]]; then
+  SSHD_TEST_ADDR="127.0.0.1"
+  warn "No SSH client address was detected; Match Address validation uses 127.0.0.1. The mandatory second-login test remains authoritative."
 fi
+SSHD_CONTEXT=(-C "user=${SUDO_USER},host=${SSHD_TEST_HOST},addr=${SSHD_TEST_ADDR}")
 
 cat <<'EOF'
 This script will:
@@ -50,15 +57,13 @@ This script will:
 Keep the current SSH session open until a second connection to the new port succeeds.
 EOF
 
-if [[ -n "$SUDO_HOME" ]]; then
-  AUTH_KEYS="${SUDO_HOME}/.ssh/authorized_keys"
-  [[ -s "$AUTH_KEYS" && -f "$AUTH_KEYS" && ! -L "$AUTH_KEYS" ]] ||
-    die "A regular, non-empty ${AUTH_KEYS} is required before password authentication can be disabled."
-  [[ "$(stat -c '%u' "$AUTH_KEYS")" == "${SUDO_UID}" ]] ||
-    die "${AUTH_KEYS} must be owned by ${SUDO_USER}."
-  (( (8#$(stat -c '%a' "$AUTH_KEYS") & 8#022) == 0 )) ||
-    die "${AUTH_KEYS} must not be group- or world-writable."
-fi
+AUTH_KEYS="${SUDO_HOME}/.ssh/authorized_keys"
+[[ -s "$AUTH_KEYS" && -f "$AUTH_KEYS" && ! -L "$AUTH_KEYS" ]] ||
+  die "A regular, non-empty ${AUTH_KEYS} is required before password authentication can be disabled."
+[[ "$(stat -c '%u' "$AUTH_KEYS")" == "${SUDO_UID}" ]] ||
+  die "${AUTH_KEYS} must be owned by ${SUDO_USER}."
+(( (8#$(stat -c '%a' "$AUTH_KEYS") & 8#022) == 0 )) ||
+  die "${AUTH_KEYS} must not be group- or world-writable."
 
 while true; do
   read -r -p "New SSH port [1024-65535, not 22]: " NEW_PORT
@@ -146,9 +151,9 @@ if ! sshd -t; then
   die "sshd validation failed. New SSH drop-in was removed."
 fi
 
-EFFECTIVE_PASSWORD="$(sshd -T | awk '$1=="passwordauthentication"{print $2; exit}')"
-EFFECTIVE_KBD="$(sshd -T | awk '$1=="kbdinteractiveauthentication"{print $2; exit}')"
-EFFECTIVE_PUBKEY="$(sshd -T | awk '$1=="pubkeyauthentication"{print $2; exit}')"
+EFFECTIVE_PASSWORD="$(sshd -T "${SSHD_CONTEXT[@]}" | awk '$1=="passwordauthentication"{print $2; exit}')"
+EFFECTIVE_KBD="$(sshd -T "${SSHD_CONTEXT[@]}" | awk '$1=="kbdinteractiveauthentication"{print $2; exit}')"
+EFFECTIVE_PUBKEY="$(sshd -T "${SSHD_CONTEXT[@]}" | awk '$1=="pubkeyauthentication"{print $2; exit}')"
 
 if [[ "$EFFECTIVE_PASSWORD" != "no" ||
       "$EFFECTIVE_KBD" != "no" ||
@@ -174,7 +179,7 @@ EOF
   mv -f -- "$SOCKET_TMP" "$SOCKET_DROPIN"
   log "Prepared ssh.socket override for TCP ${NEW_PORT}"
 else
-  mapfile -t EFFECTIVE_PORTS < <(sshd -T | awk '$1=="port"{print $2}')
+  mapfile -t EFFECTIVE_PORTS < <(sshd -T "${SSHD_CONTEXT[@]}" | awk '$1=="port"{print $2}')
 
   if [[ "${#EFFECTIVE_PORTS[@]}" -ne 1 || "${EFFECTIVE_PORTS[0]}" != "$NEW_PORT" ]]; then
     rm -f "$DROPIN"
@@ -272,7 +277,7 @@ TCP/22 firewall rule.
 
 Useful checks:
 
-  sshd -T | grep -E '^(port|passwordauthentication|kbdinteractiveauthentication|pubkeyauthentication) '
+  sshd -T -C 'user=${SUDO_USER},host=${SSHD_TEST_HOST},addr=${SSHD_TEST_ADDR}' | grep -E '^(port|passwordauthentication|kbdinteractiveauthentication|pubkeyauthentication) '
   ss -ltnp | grep ':${NEW_PORT}'
 
 Keep this current SSH session open until the second login is confirmed.
