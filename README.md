@@ -56,6 +56,8 @@ The installer:
 
 The installer is idempotent. Re-running it replaces its managed blocks instead of duplicating them.
 
+For safety, the installer refuses to rewrite symlinked shell or tmux configuration files. If your dotfile manager uses symlinks for `.bashrc`, `.zshrc`, `.profile`, or `.tmux.conf`, add the documented managed block to the real source file instead of running the automatic installer.
+
 ## Test
 
 Start tmux locally:
@@ -152,6 +154,8 @@ It:
 - explicitly keeps public-key authentication enabled,
 - validates `sshd` before applying changes,
 - requires a safe, non-empty `authorized_keys` file for the invoking sudo user,
+- refuses direct root execution and must be run through `sudo` by the account whose key login will be tested,
+- evaluates authentication and port settings with an `sshd -T -C` user/host/client context so applicable `Match` blocks are included,
 - uses SSH and systemd drop-ins instead of editing vendor unit files,
 - backs up the SSH configuration,
 - adds the new UFW rule before switching listeners when UFW is active,
